@@ -1,4 +1,4 @@
-OFA_DIR ?= /usr/src/ofa_kernel/default
+OFA_DIR ?= /usr/src/ofa_kernel/4.19.118-fastswap
 OFA_INCLUDE := $(OFA_DIR)/include
 OFA_SYMVERS := $(OFA_DIR)/Module.symvers
 

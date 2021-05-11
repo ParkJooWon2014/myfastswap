@@ -3,7 +3,7 @@
 #include "fastswap_rdma.h"
 #include <linux/slab.h>
 #include <linux/cpumask.h>
-
+//#include <infiniband/verbs.h>
 static struct sswap_rdma_ctrl *gctrl;
 static int serverport;
 static int numqueues;
@@ -107,8 +107,7 @@ static int sswap_rdma_create_qp(struct rdma_queue *queue)
   init_attr.send_cq = queue->cq;
   init_attr.recv_cq = queue->cq;
   /* just to check if we are compiling against the right headers */
-  init_attr.create_flags = IB_QP_EXP_CREATE_ATOMIC_BE_REPLY & 0;
-
+  init_attr.create_flags = 0;//IB_QP_EXP_CREATE_ATOMIC_BE_REPLY & 0;
   ret = rdma_create_qp(queue->cm_id, rdev->pd, &init_attr);
   if (ret) {
     pr_err("rdma_create_qp failed: %d\n", ret);
@@ -463,11 +462,10 @@ static void sswap_rdma_read_done(struct ib_cq *cq, struct ib_wc *wc)
   atomic_dec(&q->pending);
   kmem_cache_free(req_cache, req);
 }
-
 inline static int sswap_rdma_post_rdma(struct rdma_queue *q, struct rdma_req *qe,
   struct ib_sge *sge, u64 roffset, enum ib_wr_opcode op)
 {
-  struct ib_send_wr *bad_wr;
+  const struct ib_send_wr *bad_wr;
   struct ib_rdma_wr rdma_wr = {};
   int ret;
 
@@ -519,7 +517,7 @@ static void sswap_rdma_recv_remotemr_done(struct ib_cq *cq, struct ib_wc *wc)
 static int sswap_rdma_post_recv(struct rdma_queue *q, struct rdma_req *qe,
   size_t bufsize)
 {
-  struct ib_recv_wr *bad_wr;
+	const  struct ib_recv_wr *bad_wr;
   struct ib_recv_wr wr = {};
   struct ib_sge sge;
   int ret;
@@ -668,11 +666,45 @@ static inline int write_queue_add(struct rdma_queue *q, struct page *page,
   return ret;
 }
 
+static int find_page(struct sswap_rdma_ctrl *ctrl,struct rdma_req *req,
+		struct page * page, u64 offset)
+{
+	int ret;
+	pr_info("%s\n",__func__);
+
+	struct ib_device *dev = ctrl->rdev->dev;
+	struct sswap_rdma_memregion_list * need_mem;
+	struct sswap_rdma_memregion_list *temp = kmalloc(sizeof(*temp),GFP_KERNEL);
+
+	short check = 1;
+	
+	memcpy(temp->servermr,&ctrl->servermr,sizeof(ctrl->servermr));
+
+	list_for_each_entry(need_mem,&ctrl->servermr_list,list){
+		memcpy(&ctrl->servermr,need_mem->servermr,sizeof(*need_mem->servermr));
+		ret = get_req_for_page(&req, dev, page, DMA_TO_DEVICE);
+		if(!ret){
+			check = 0;
+			break;
+		}
+	}
+
+	if(ret){
+		return 1;
+	}
+
+	list_add_tail(&temp->list,&ctrl->servermr_list);
+	
+	return 0;
+	
+}
+
 static inline int begin_read(struct rdma_queue *q, struct page *page,
 			     u64 roffset)
 {
-  struct rdma_req *req;
-  struct ib_device *dev = q->ctrl->rdev->dev;
+
+  struct rdma_req *req ;
+  //struct ib_device *dev = q->ctrl->rdev->dev;
   struct ib_sge sge = {};
   int ret, inflight;
 
@@ -683,8 +715,8 @@ static inline int begin_read(struct rdma_queue *q, struct page *page,
     poll_target(q, 8);
     pr_info_ratelimited("back pressure happened on reads");
   }
-
-  ret = get_req_for_page(&req, dev, page, DMA_TO_DEVICE);
+  ret = find_page(q->ctrl,req,page,roffset);
+ // ret = get_req_for_page(&req, dev, page, DMA_TO_DEVICE);
   if (unlikely(ret))
     return ret;
 
@@ -692,15 +724,74 @@ static inline int begin_read(struct rdma_queue *q, struct page *page,
   ret = sswap_rdma_post_rdma(q, req, &sge, roffset, IB_WR_RDMA_READ);
   return ret;
 }
+unsigned long page_size_count = 0 ;
+unsigned short count = 0 ;
+
+//JooWon
+static int sswap_rdma_recv_remote_els_mr(struct sswap_rdma_ctrl *ctrl)
+{
+  struct rdma_req *qe;
+  int ret;
+  struct ib_device *dev;
+  struct sswap_rdma_memregion_list * server =(struct sswap_rdma_memregion_list *)kmalloc(sizeof(*server)
+		  ,GFP_KERNEL);
+  
+  struct sswap_rdma_memregion_list *origin =(struct sswap_rdma_memregion_list *)kmalloc(sizeof(*server)
+		  ,GFP_KERNEL);
+
+  memcpy(origin->servermr ,&ctrl->servermr,sizeof(ctrl->servermr));
+
+  pr_info("start: %s\n", __FUNCTION__);
+  dev = ctrl->rdev->dev;
+  
+  ret = get_req_for_buf(&qe, dev, server->servermr, sizeof(ctrl->servermr),
+			DMA_FROM_DEVICE);
+  if (unlikely(ret))
+    goto out;
+
+  qe->cqe.done = sswap_rdma_recv_remotemr_done;
+
+  memcpy(&ctrl->servermr,server->servermr,sizeof(*server->servermr));
+ 
+  ret = sswap_rdma_post_recv(&(ctrl->queues[0]), qe, sizeof(struct sswap_rdma_memregion));
+
+
+  if (unlikely(ret))
+    goto out_free_qe;
+
+  sswap_rdma_wait_completion(ctrl->queues[0].cq, qe);
+
+  list_add_tail(&origin->list,&ctrl->servermr_list);
+
+out_free_qe:
+  kmem_cache_free(req_cache, qe);
+out:
+  return ret;
+}
+
+// end
 
 int sswap_rdma_write(struct page *page, u64 roffset)
 {
   int ret;
   struct rdma_queue *q;
-
+  unsigned long flags;
+  struct sswap_rdma_ctrl *ctrl ;
   VM_BUG_ON_PAGE(!PageSwapCache(page), page);
 
   q = sswap_rdma_get_queue(smp_processor_id(), QP_WRITE_SYNC);
+  //Joowon part
+  ctrl = q->ctrl;
+
+  spin_lock_irqsave(&q->cq_lock, flags);
+  page_size_count += PAGE_SIZE;
+  pr_info("page_size_count is %lu \n",page_size_count);
+  if(page_size_count > (1UL << 10*(count+1) )){
+	  ret = sswap_rdma_recv_remote_els_mr(ctrl);
+	  count++;
+  }
+  spin_unlock_irqrestore(&q->cq_lock, flags);
+  // ---end
   ret = write_queue_add(q, page, roffset);
   BUG_ON(ret);
   drain_queue(q);
@@ -750,6 +841,7 @@ int sswap_rdma_read_async(struct page *page, u64 roffset)
   VM_BUG_ON_PAGE(PageUptodate(page), page);
 
   q = sswap_rdma_get_queue(smp_processor_id(), QP_READ_ASYNC);
+  
   ret = begin_read(q, page, roffset);
   return ret;
 }
@@ -834,7 +926,6 @@ static int __init sswap_rdma_init_module(void)
     ib_unregister_client(&sswap_rdma_ib_client);
     return -ENODEV;
   }
-
   ret = sswap_rdma_recv_remotemr(gctrl);
   if (ret) {
     pr_err("could not setup remote memory region\n");
