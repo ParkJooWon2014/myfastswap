@@ -665,7 +665,7 @@ static inline int write_queue_add(struct rdma_queue *q, struct page *page,
 
   return ret;
 }
-
+/*
 static int find_page(struct sswap_rdma_ctrl *ctrl,struct rdma_req *req,
 		struct page * page, u64 offset)
 {
@@ -698,16 +698,17 @@ static int find_page(struct sswap_rdma_ctrl *ctrl,struct rdma_req *req,
 	return 0;
 	
 }
+*/
 
 static inline int begin_read(struct rdma_queue *q, struct page *page,
 			     u64 roffset)
 {
 
   struct rdma_req *req ;
-  //struct ib_device *dev = q->ctrl->rdev->dev;
+  struct ib_device *dev = q->ctrl->rdev->dev;
   struct ib_sge sge = {};
   int ret, inflight;
-
+  pr_info("%s\n",__func__);
   /* back pressure in-flight reads, can't send more than
    * QP_MAX_SEND_WR at a time */
   while ((inflight = atomic_read(&q->pending)) >= QP_MAX_SEND_WR) {
@@ -715,8 +716,9 @@ static inline int begin_read(struct rdma_queue *q, struct page *page,
     poll_target(q, 8);
     pr_info_ratelimited("back pressure happened on reads");
   }
-  ret = find_page(q->ctrl,req,page,roffset);
- // ret = get_req_for_page(&req, dev, page, DMA_TO_DEVICE);
+  
+//  ret = find_page(q->ctrl,req,page,roffset);
+  ret = get_req_for_page(&req, dev, page, DMA_TO_DEVICE);
   if (unlikely(ret))
     return ret;
 
@@ -726,7 +728,7 @@ static inline int begin_read(struct rdma_queue *q, struct page *page,
 }
 unsigned long page_size_count = 0 ;
 unsigned short count = 0 ;
-
+/*
 //JooWon
 static int sswap_rdma_recv_remote_els_mr(struct sswap_rdma_ctrl *ctrl)
 {
@@ -768,30 +770,24 @@ out_free_qe:
 out:
   return ret;
 }
-
+*/
 // end
 
 int sswap_rdma_write(struct page *page, u64 roffset)
 {
   int ret;
   struct rdma_queue *q;
-  unsigned long flags;
-  struct sswap_rdma_ctrl *ctrl ;
+  //unsigned long flags;
+ // struct sswap_rdma_ctrl *ctrl ;
   VM_BUG_ON_PAGE(!PageSwapCache(page), page);
 
   q = sswap_rdma_get_queue(smp_processor_id(), QP_WRITE_SYNC);
   //Joowon part
-  ctrl = q->ctrl;
 
-  spin_lock_irqsave(&q->cq_lock, flags);
-  page_size_count += PAGE_SIZE;
-  pr_info("page_size_count is %lu \n",page_size_count);
-  if(page_size_count > (1UL << 10*(count+1) )){
-	  ret = sswap_rdma_recv_remote_els_mr(ctrl);
-	  count++;
-  }
-  spin_unlock_irqrestore(&q->cq_lock, flags);
+
   // ---end
+
+  pr_info("find it %s\n",__func__);
   ret = write_queue_add(q, page, roffset);
   BUG_ON(ret);
   drain_queue(q);

@@ -24,7 +24,6 @@ struct sswap_rdma_dev {
 
 struct rdma_req {
   struct completion done;
-  struct list_head list;
   struct ib_cqe cqe;
   u64 dma;
   struct page *page;
@@ -51,15 +50,10 @@ struct sswap_rdma_memregion {
     u64 baseaddr;
     u32 key;
 };
-struct sswap_rdma_memregion_list{
-	struct sswap_rdma_memregion *servermr;
-	struct list_head list;
-};
 struct sswap_rdma_ctrl {
   struct sswap_rdma_dev *rdev; // TODO: move this to queue
   struct rdma_queue *queues;
   struct sswap_rdma_memregion servermr;
-  struct list_head servermr_list;
   union {
     struct sockaddr addr;
     struct sockaddr_in addr_in;
